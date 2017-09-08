@@ -9,9 +9,12 @@ import sys
 import argparse
 import traceback
 import time
-import datetime
+from datetime import datetime
+import logging
 
-options = {"model": "./cfg/yolo.cfg", "load": "./bin/yolo.weights", "threshold": 0.0, "gpu": 0.8}
+logger = logging.getLogger('ObjectCounter')
+
+options = {"model": "./cfg/yolo.cfg", "load": "./bin/yolo.weights", "threshold": 0.0, "gpu": 0.0}
 
 tfnet = TFNet(options)
 
@@ -42,11 +45,10 @@ def detect_and_count_objects(data_source, outfile, alloutfile):
                 pred = tfnet.return_predict(img)
                 if len(pred) > 0:
                     res[row['id']] = pred
-                print("Processed image: " + str(row['id']))
-                sys.stdout.flush()
+                logger.info("Processed image: " + str(row['id']))
             except Exception:
-                print ("Error processing image: " + row['x'])
-                print (traceback.format_exc())
+                logger.error ("Error processing image: " + str(row['x']))
+                logger.error (traceback.format_exc())
                 attempt += 1
                 if attempt < 6:
                     continue
@@ -101,10 +103,12 @@ def main(argv):
     args = parser.parse_args()
     inputfile = os.path.join(DATA_FOLDER, 'in', args.input_file)
     ncores = args.p
-
+    handler = logging.FileHandler(os.path.join('..', 'log', os.path.splitext(args.input_file)[0] + '.log'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
     data_source = pd.read_csv(inputfile, index_col=None, header=0)
     tic = time.time()
-    print ("Launched at: " + str(datetime.now()))
+    logger.info ("Launched at: " + str(datetime.now()))
 
     if ncores > 1:
         i = 0
@@ -134,17 +138,17 @@ def main(argv):
 
     else:
         detect_and_count_objects(data_source,
-                                 os.path.join(DATA_FOLDER, 'predictions_' + os.path.basename(inputfile)),
-                                 os.path.join(DATA_FOLDER, 'predictions_all' + os.path.basename(inputfile))
+                                 os.path.join(DATA_FOLDER, 'out', 'predictions_' + os.path.basename(inputfile)),
+                                 os.path.join(DATA_FOLDER, 'out', 'confidence_predictions' + os.path.basename(inputfile))
                                 )
 
     toc = time.time()
-    print ("Finished at: " + str(datetime.now()))
+    logger.info ("Finished at: " + str(datetime.now()))
 
     tac = round(toc - tic)
     (t_min, t_sec) = divmod(tac, 60)
     (t_hour, t_min) = divmod(t_min, 60)
-    print('Time elapsed: {0} hours {1} minutes and {2} seconds'.format(t_hour, t_min, t_sec))
+    logger.info('Time elapsed: {0} hours {1} minutes and {2} seconds'.format(t_hour, t_min, t_sec))
     
 if __name__ == "__main__":
     main(sys.argv[1:])
