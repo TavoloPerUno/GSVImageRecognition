@@ -13,14 +13,11 @@ from datetime import datetime
 import logging
 
 logger = logging.getLogger('ObjectCounter')
-
-options = {"model": "./cfg/yolo.cfg", "load": "./bin/yolo.weights", "threshold": 0.0, "gpu": 0.0}
+options = {"model": "./cfg/yolo.cfg", "load": "./bin/yolo.weights", "threshold": 0.0, "gpu": 0.8}
 
 tfnet = TFNet(options)
 
 DATA_FOLDER = '../data'
-
-
 
 
 parser = argparse.ArgumentParser(description='Count images')
@@ -29,57 +26,83 @@ parser = argparse.ArgumentParser(description='Count images')
 parser.add_argument('input_file', type=str,
                     help='Input file')
 
+parser.add_argument('-opt', type=str,
+                    help='Option')
+
 parser.add_argument('-p', type=int,
                     help='Num cores')
 
 def detect_and_count_objects(data_source, outfile, alloutfile):
 
     res = dict()
+    predictions = pd.DataFrame(columns=['Image', 'Object', 'count', 'Threshold'])
+    predictions_all = pd.DataFrame(columns=['Image', 'Object', 'Confidence'])
+
+    lst_threshold = np.arange(0.0, 1.05, 0.025).tolist()
 
     for idx, row in data_source.iterrows():
         attempt = 1
         while True:
             try:
-                img = io.imread(row['x'])
+                img = io.imread(row['URL'])
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
                 pred = tfnet.return_predict(img)
                 if len(pred) > 0:
-                    res[row['id']] = pred
-                logger.info("Processed image: " + str(row['id']))
+                    predictions_all = predictions_all.append([{'Image': str(row['ID']), 'Object': obj['label'], 'Confidence': obj['confidence']} for obj in pred], ignore_index=True)
+                logger.info("Processed image: " + str(row['ID']))
             except Exception:
-                logger.error ("Error processing image: " + str(row['x']))
+                logger.error ("Error processing image: " + str(row['URL']))
                 logger.error (traceback.format_exc())
                 attempt += 1
                 if attempt < 6:
                     continue
             break
-    predictions = pd.DataFrame(columns=['Image', 'Object'])
-    predictions_all = pd.DataFrame(columns=['Image', 'Object', 'Confidence'])
-
-    for img in res.keys():
-        preds = res[img]
-        for obj in preds:
-            nrow = [{'Image': img, 'Object': obj['label'], 'Confidence': obj['confidence']}]
-            predictions_all = predictions_all.append(nrow, ignore_index=True)
 
     predictions_all.to_csv(alloutfile, header=True, index=False)
 
 
-    for img in res.keys():
-        preds = res[img]
-        for obj in preds:
-            if (obj['label'] in ['person', 'bicycle', 'motorbike', 'truck', 'car', 'bus', 'train']) and \
-                ((obj['label'] == 'person' and obj['confidence'] > 0.35) or
-                 (obj['label'] == 'bicycle' and obj['confidence'] > 0.18) or
-                 (obj['label'] in ['car', 'truck'] and obj['confidence'] > 0.23) or
-                 (obj['label'] not in ['bicycle', 'person', 'car', 'truck'] and obj['confidence'] > 0.1)
-                ):
-                nrow = [{'Image': img, 'Object': obj['label']}]
-                predictions = predictions.append(nrow, ignore_index=True)
-
-    predictions = predictions.groupby(['Image', 'Object']).size().reset_index(name='count')
+    for thres in lst_threshold:
+        new_predictions = predictions_all.loc[predictions_all['Confidence'] >= thres].groupby(['Image', 'Object']).size().reset_index(name='count')
+        predictions = predictions.append(pd.concat([new_predictions, pd.DataFrame({'Threshold': thres}, index=new_predictions.index)], axis=1), ignore_index=True)
 
     predictions.to_csv(outfile, header=True, index=False)
+
+def detect_and_count_objects_from_downloaded(sourcefolder, outfile, alloutfile):
+
+    res = dict()
+    predictions = pd.DataFrame(columns=['Image', 'Object', 'count', 'Threshold'])    
+    predictions_all = pd.DataFrame(columns=['Image', 'Object', 'Confidence'])
+
+    lst_threshold = np.arange(0.0, 1.05, 0.025).tolist()
+
+    id = 0
+    for filename in os.path.listdir(sourcefolder):
+        attempt = 1
+        while True:
+            try:
+                id = os.path.splitext(filename)[0]
+                imgcv = cv2.imread(os.path.join(sourcefolder, filename))
+                pred = tfnet.return_predict(imgcv)
+                if len(pred) > 0:
+                    predictions_all = predictions_all.append([{'Image': str(id), 'Object': obj['label'], 'Confidence': obj['confidence']} for obj in pred], ignore_index=True)
+                logger.info("Processed image: " + str(id))
+            except Exception:
+                logger.error ("Error processing image: " + str(id))
+                logger.error (traceback.format_exc())
+                attempt += 1
+                if attempt < 6:
+                    continue
+            break
+
+    predictions_all.to_csv(alloutfile, header=True, index=False)
+
+
+    for thres in lst_threshold:
+        new_predictions = predictions_all.loc[predictions_all['Confidence'] >= thres].groupby(['Image', 'Object']).size().reset_index(name='count')
+        predictions = predictions.append(pd.concat([new_predictions, pd.DataFrame({'Threshold': thres}, index=new_predictions.index)], axis=1), ignore_index=True)
+
+    predictions.to_csv(outfile, header=True, index=False)
+
 
 def combile_csvs(lst_filename, finalname):
     lst_result = []
@@ -97,7 +120,6 @@ def combile_csvs(lst_filename, finalname):
     return result
 
 def main(argv):
-    input_file = ''
     ncores = 28
 
     args = parser.parse_args()
@@ -106,7 +128,12 @@ def main(argv):
     handler = logging.FileHandler(os.path.join('..', 'log', os.path.splitext(args.input_file)[0] + '.log'))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
-    data_source = pd.read_csv(inputfile, index_col=None, header=0)
+
+    data_source = ''
+    if args.opt == 'URL':
+        data_source = pd.read_csv(inputfile, index_col=None, header=0)
+    else:
+        data_source = os.path.join(DATA_FOLDER, inputfile)
     tic = time.time()
     logger.info ("Launched at: " + str(datetime.now()))
 
@@ -137,10 +164,16 @@ def main(argv):
 
 
     else:
-        detect_and_count_objects(data_source,
-                                 os.path.join(DATA_FOLDER, 'out', 'predictions_' + os.path.basename(inputfile)),
-                                 os.path.join(DATA_FOLDER, 'out', 'confidence_predictions' + os.path.basename(inputfile))
-                                )
+        if args.opt == 'URL':
+            detect_and_count_objects(data_source,
+                                         os.path.join(DATA_FOLDER, 'out', 'predictions_' + os.path.basename(inputfile)),
+                                         os.path.join(DATA_FOLDER, 'out', 'confidence_predictions' + os.path.basename(inputfile))
+                                        )
+        else:
+            detect_and_count_objects_from_downloaded(data_source,
+                                         os.path.join(DATA_FOLDER, 'out', 'predictions_' + args.input_file),
+                                         os.path.join(DATA_FOLDER, 'out', 'confidence_predictions' + args.input_file)
+                                        )
 
     toc = time.time()
     logger.info ("Finished at: " + str(datetime.now()))
@@ -149,8 +182,7 @@ def main(argv):
     (t_min, t_sec) = divmod(tac, 60)
     (t_hour, t_min) = divmod(t_min, 60)
     logger.info('Time elapsed: {0} hours {1} minutes and {2} seconds'.format(t_hour, t_min, t_sec))
-    
+
 if __name__ == "__main__":
     main(sys.argv[1:])
-
 
